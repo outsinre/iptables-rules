@@ -1,0 +1,192 @@
+#!/usr/bin/iptables-apply
+### This is template for Iptables rules used by:
+###   iptables-apply -t 360 /path/to/this/template
+###
+### There are two special arguments:
+###   -4 / --ipv4
+###   -6 / --ipv6
+### which means that rule is only for IPv4 / IPv6
+###
+### Without specification, a rule is for both IPv4 / IPv6
+### This option allows to put both IPv4 and IPv6 rules in
+### a single rule file for  use  with  both:
+###    iptables-apply / iptables-restore and
+###   ip6tables-apply / ip6tables-restore
+###
+### Syntax almost the same as:
+###   /var/lib/iptables/rules-save
+### excpet omitting the square brackets (packets and bytes counters)
+### It's safely to remove counters
+###
+### Each table is enclosed by:
+###   *table-name and COMMIT
+### Default policy begins with colon. Rule omits 'iptables -t' command part
+###
+### Only rules for 'filter' and 'nat' tables. The other tables
+### use default value
+###
+### Rules will be examined by order until one matches
+###
+### Default ports are listed in:
+###   /etc/services
+###
+### RULE ORDER IN *nat TABLE IS IMPORTANT (mainly DIRECTing traffic)
+### *nat TABLE IS ONLY CONSULTED FOR NEW TCP CONNECTION
+###
+### PREROUTING chain aims at routing incoming traffic from the Internet
+### So it's nearly not referred to on a personal notebook
+###
+### Tor use Shadowsocks as front end proxy and all Tor traffic goes to loopback interface first
+### So rule:
+###   -A OUTPUT -o lo -j RETURN
+### must be accecpted and must come after DNS redirect:
+###   REDIRECT --to-ports 9053
+###
+### *nat table controls whether Transparent proxy while *filter table
+### controls specific protocols/IPs
+###
+### Traffic that won't go through Tor should be placed before:
+###   OUTPUT ... REDIRECT --to-port 9040
+### LAN and loopback is such a case. Check LAN IP address, mine is:
+###   192.168.0.0/24
+### Shadowsocks traffic is another case since it's front end proxy of Tor
+### It's meaningless to REDIRECT Shadowsocks traffic to Tor again
+###
+###   REDIRECT --to-ports 9053
+###   DNAT --to-destination 127.0.0.1:9053
+### do the same work. I choose the 2nd while BLACKLIST the REDIRECT
+### kernel modules (xt_REDIRECT && nf_nat_redirect)
+###
+### All default traffic goes through Tor. To disable Transparent proxy,
+### just comment out the two lines:
+###   REDIRECT --to-port 9040
+### Or use 'whitelist' - all default traffic goes without Transaprent proxy:
+###
+### Create a new chain: specify which traffic go through Tor while
+### other traffic uses normal connection:
+###   -N TRANSPROXY
+###   -A TRANSPROXY -p tcp -d imap.gmx.com -m tcp --dport 993 -j REDIRECT --to-ports 9040
+###   -A TRANSPROXY -p tcp -d 123.123.123.123 -m tcp --dport 123 -j REDIRECT --to-ports 9040
+###   -A TRANSPROXY -j RETURN
+### We should make sure the default policy is:
+###   ACCEPT
+### for OUTPUT chain in *filter and *nat tables
+### Remember to re-apply this template when:
+###   imap.gmx.com
+### changes IP (usually caused by CDN service)
+###
+### If an application connection fails, probably:
+###   Change OUTPUT policy to ACCEPT or
+###   turn on specific protocol port or
+###   turn on Transparent proxy in *nat table
+### Refer to (www.gentoo-wiki.info/Iptables_port_reference)
+###
+### IRC Freenode SSL port:
+###   --dport 7000
+### IRC Oftc SSL port:
+###   --dport 6697
+### Default ports 6667 is not used. If IRC servers are configured
+### to use proxy, then remove these two rules
+###
+### Pay attention to two rules in *filter table:
+###   -A OUTPUT -o lo -j ACCEPT
+###   -4 -A OUTPUT -d 127.0.0.1/8 -j ACCEPT
+### The 2nd rule can NOT be ommitted for Tor. Because Tor traffic goes
+### to Shadowsocks first (127.0.0.1:1080) but the output interface is
+### real output net card
+###
+### All ipv6-icmp is dropped in this template
+###
+### In *filter table, both INPUT and OUTPUT have default REJECT rule:
+###   --reject-with icmp[6]-port-unreachable
+
+
+## nat table
+*nat
+:PREROUTING ACCEPT
+:INPUT ACCEPT
+:OUTPUT ACCEPT
+:POSTROUTING ACCEPT
+
+-A PREROUTING ! -i lo -p udp -m udp --dport 53 -j REDIRECT --to-ports 9053
+-A PREROUTING ! -i lo -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 9053
+-A PREROUTING ! -i lo -p tcp -m tcp --syn -j REDIRECT --to-ports 9040
+
+-A OUTPUT -m owner --uid-owner tor -j RETURN
+-A OUTPUT -p udp -m udp --dport 53 -j REDIRECT --to-ports 9053
+-A OUTPUT -p tcp -m tcp --dport 53 -j REDIRECT --to-ports 9053
+
+-A OUTPUT -o lo -j RETURN
+-4 -A OUTPUT -d 127.0.0.1/8 -j RETURN
+-6 -A OUTPUT -d ::1/128 -j RETURN
+-4 -A OUTPUT -d 192.168.0.0/24 -j RETURN
+
+-4 -A OUTPUT -p tcp -d ss-ip -m tcp --dport ss-port -j RETURN
+
+-A OUTPUT -p tcp -m tcp --syn -j REDIRECT --to-ports 9040
+
+COMMIT
+
+
+## filter table
+*filter
+:INPUT DROP
+:FORWARD DROP
+:OUTPUT DROP
+
+-A INPUT -i lo -j ACCEPT
+-4 -A INPUT ! -i lo -s 127.0.0.1/8 -j DROP
+-6 -A INPUT ! -i lo -s ::1/128 -j DROP
+
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+-4 -A INPUT -p icmp -m icmp --icmp-type echo-request -j DROP
+-4 -A INPUT -p icmp -m icmp --icmp-type echo-reply -m conntrack --ctstate NEW -j ACCEPT
+-4 -A INPUT -p icmp -m icmp --icmp-type destination-unreachable -m conntrack --ctstate NEW -j ACCEPT
+-4 -A INPUT -p icmp -m icmp --icmp-type time-exceeded -m conntrack --ctstate NEW -j ACCEPT
+-4 -A INPUT -p icmp -m icmp --icmp-type parameter-problem -m conntrack --ctstate NEW -j ACCEPT
+
+-6 -A INPUT -p icmpv6 -m icmp6 --icmpv6-type echo-request -j DROP
+-6 -A INPUT -p icmpv6 -m icmp6 --icmpv6-type echo-reply -m conntrack --ctstate NEW -j ACCEPT
+-6 -A INPUT -p icmpv6 -m icmp6 --icmpv6-type destination-unreachable -m conntrack --ctstate NEW -j ACCEPT
+-6 -A INPUT -p icmpv6 -m icmp6 --icmpv6-type time-exceeded -m conntrack --ctstate NEW -j ACCEPT
+-6 -A INPUT -p icmpv6 -m icmp6 --icmpv6-type parameter-problem -m conntrack --ctstate NEW -j ACCEPT
+
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+-A INPUT -p tcp -m tcp --dport 113 --syn -j REJECT --reject-with tcp-reset
+-4 -A INPUT -j REJECT --reject-with icmp-port-unreachable
+-6 -A INPUT -j REJECT --reject-with icmp6-port-unreachable
+
+
+-A OUTPUT -m owner --uid-owner tor -j ACCEPT
+-4 -A OUTPUT -p tcp -d ss-ip -m tcp --dport ss-port -j ACCEPT
+
+-A OUTPUT -o lo -j ACCEPT
+-4 -A OUTPUT -d 127.0.0.1/8 -j ACCEPT
+-6 -A OUTPUT -d ::1/128 -j ACCEPT
+-4 -A OUTPUT -d 192.168.0.0/24  -j ACCEPT
+
+-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+-4 -A OUTPUT -p icmp -m icmp --icmp-type echo-request -m conntrack --ctstate NEW -j ACCEPT
+-4 -A OUTPUT -p icmp -m icmp --icmp-type echo-reply -j DROP
+
+-6 -A OUTPUT -p icmpv6 -m icmp6 --icmpv6-type echo-request -m conntrack --ctstate NEW -j ACCEPT
+-6 -A OUTPUT -p icmpv6 -m icmp6 --icmpv6-type echo-reply -j DROP
+
+-A OUTPUT -p tcp -m tcp --dport rsync -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport git -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport https -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport http -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport imaps -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport smtps -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport submission -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport nntps -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp -m tcp --dport nntp -m conntrack --ctstate NEW -j ACCEPT
+#-A OUTPUT -p tcp -m tcp --dport 7000 -m conntrack --ctstate NEW -j ACCEPT
+#-A OUTPUT -p tcp -m tcp --dport 6697 -m conntrack --ctstate NEW -j ACCEPT
+
+-4 -A OUTPUT -j REJECT --reject-with icmp-port-unreachable
+-6 -A OUTPUT -j REJECT --reject-with icmp6-port-unreachable
+
+COMMIT
